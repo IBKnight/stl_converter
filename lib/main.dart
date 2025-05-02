@@ -1,17 +1,22 @@
 import 'dart:io';
-import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/scheduler.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:flutter_scene/scene.dart';
-import 'package:vector_math/vector_math.dart' as vm;
+import 'package:webview_flutter/webview_flutter.dart';
 
 import 'converter/stl_parser.dart';
 import 'converter/geometry_processor.dart';
 import 'converter/gltf_builder.dart';
 import 'converter/gltf_writer.dart';
+
+import 'package:shelf/shelf_io.dart' as io;
+import 'package:shelf_static/shelf_static.dart';
+
+void main() {
+  runApp(MaterialApp(home: ConverterPage()));
+}
 
 class ConverterPage extends StatefulWidget {
   const ConverterPage({super.key});
@@ -23,39 +28,25 @@ class ConverterPage extends StatefulWidget {
 class _ConverterPageState extends State<ConverterPage>
     with SingleTickerProviderStateMixin {
   String? _status;
-  bool _isProcessing = false;
   String? _modelPath;
+  String? _binPath;
 
-  Scene scene = Scene();
   bool modelLoaded = false;
   double elapsed = 0;
-  late final Ticker _ticker;
 
   @override
   void initState() {
     super.initState();
-    final mesh = Mesh(CuboidGeometry(vm.Vector3(1, 1, 1)), UnlitMaterial());
-    scene.addMesh(mesh);
-
-    _ticker = createTicker((Duration elapsedTime) {
-      setState(() {
-        elapsed = elapsedTime.inMilliseconds / 1000.0;
-      });
-    })
-      ..start();
   }
 
   @override
   void dispose() {
-    scene.removeAll();
-    _ticker.dispose();
     super.dispose();
   }
 
   Future<void> _pickAndConvertFile() async {
     setState(() {
       _status = null;
-      _isProcessing = true;
     });
 
     try {
@@ -67,7 +58,6 @@ class _ConverterPageState extends State<ConverterPage>
       if (result == null || result.files.isEmpty) {
         setState(() {
           _status = 'Файл не выбран.';
-          _isProcessing = false;
         });
         return;
       }
@@ -77,101 +67,56 @@ class _ConverterPageState extends State<ConverterPage>
 
       final triangles = await StlParser.parse(file);
       final mesh = GeometryProcessor.process(triangles);
-      final asset = GltfBuilder.build(mesh, asGlb: true);
+      final asset = GltfBuilder.build(mesh, asGlb: false);
 
       final directory = await getApplicationDocumentsDirectory();
-      final outputPath = '${directory.path}/converted_model.glb';
+      final outputPath = '${directory.path}';
 
-      await GltfWriter.writeGlb(asset, outputPath);
+      await GltfWriter.writeGltf(asset, outputPath);
 
       setState(() {
-        _status = 'Файл сохранён: $outputPath';
-        _modelPath = outputPath;
+        _status = '$outputPath';
+        _modelPath = '$outputPath\\model.gltf';
+        _binPath = '$outputPath\\model.bin';
       });
-
-      _loadModel(outputPath);
     } catch (e) {
       setState(() {
         _status = 'Ошибка: $e';
       });
-    } finally {
-      setState(() {
-        _isProcessing = false;
-      });
     }
-  }
-
-  Future<void> _pickAndDisplayGltfFile() async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['glb', 'gltf'],
-    );
-
-    if (result != null && result.files.single.path != null) {
-      final path = result.files.single.path!;
-      setState(() {
-        _modelPath = path;
-        _status = 'Файл загружен: $path';
-      });
-      _loadModel(path);
-    }
-  }
-
-  Future<void> _loadModel(String path) async {
-    scene.removeAll();
-    modelLoaded = false;
-
-    final node = await Node.fromAsset(path);
-    node.name = 'LoadedModel';
-    scene.add(node);
-
-    setState(() {
-      modelLoaded = true;
-    });
-  }
-
-  Widget _buildModelViewer() {
-    if (!modelLoaded) return const SizedBox.shrink();
-
-    return Expanded(
-      child: CustomPaint(
-        painter: _ScenePainter(scene, elapsed),
-        size: Size.infinite,
-      ),
-    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('STL to glTF Converter'),
-      ),
+      appBar: AppBar(title: const Text('STL to glTF Converter')),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
             ElevatedButton(
-              onPressed: _isProcessing ? null : _pickAndConvertFile,
+              onPressed: _pickAndConvertFile,
               child: const Text('Выбрать STL-файл и конвертировать'),
             ),
-            const SizedBox(height: 10),
-            ElevatedButton(
-              onPressed: _pickAndDisplayGltfFile,
-              child: const Text('Открыть .glb/.gltf файл'),
-            ),
+            Text('$_status'),
+
             const SizedBox(height: 20),
-            if (_isProcessing) const CircularProgressIndicator(),
-            if (_status != null)
-              Text(
-                _status!,
-                style: TextStyle(
-                  color:
-                      _status!.startsWith('Ошибка') ? Colors.red : Colors.green,
-                ),
-              ),
-            const SizedBox(height: 10),
-            _buildModelViewer(),
+            ElevatedButton(
+              onPressed:
+                  _modelPath != null
+                      ? () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder:
+                              (_) => WebModelViewerPage(
+                                modelPath: _modelPath!,
+                                binPath: _binPath!,
+                              ),
+                        ),
+                      )
+                      : null,
+              child: const Text('Открыть в Web-просмотрщике'),
+            ),
           ],
         ),
       ),
@@ -179,21 +124,108 @@ class _ConverterPageState extends State<ConverterPage>
   }
 }
 
-class _ScenePainter extends CustomPainter {
-  final Scene scene;
-  final double elapsed;
-
-  _ScenePainter(this.scene, this.elapsed);
+class WebModelViewerPage extends StatefulWidget {
+  final String modelPath;
+  final String binPath;
+  const WebModelViewerPage({
+    super.key,
+    required this.modelPath,
+    required this.binPath,
+  });
 
   @override
-  void paint(Canvas canvas, Size size) {
-    final camera = PerspectiveCamera(
-      position: vm.Vector3(sin(elapsed) * 5, 2, cos(elapsed) * 5),
-      target: vm.Vector3.zero(),
-    );
-    scene.render(camera, canvas, viewport: Offset.zero & size);
+  State<WebModelViewerPage> createState() => _WebModelViewerPageState();
+}
+
+class _WebModelViewerPageState extends State<WebModelViewerPage> {
+  HttpServer? _server;
+  String? _url;
+
+  @override
+  void initState() {
+    super.initState();
+    _startServerAndViewer();
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
+  void dispose() {
+    _server?.close(force: true);
+    super.dispose();
+  }
+
+  Future<void> _startServerAndViewer() async {
+    final tempDir = await getTemporaryDirectory();
+
+    // Имя файла и расширение
+
+    print(widget.modelPath);
+    final isGlb = widget.modelPath.toLowerCase().endsWith('.glb');
+    final modelName = isGlb ? 'model.glb' : 'model.gltf';
+
+    // Копируем модель в tempDir
+    await File(widget.modelPath).copy('${tempDir.path}/$modelName');
+    await File(widget.binPath).copy('${tempDir.path}/model.bin');
+
+    print('${tempDir.path}/$modelName');
+
+    // HTML с относительным путём
+
+    final html = '''
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <script type="module" src="https://unpkg.com/@google/model-viewer@4.1.0/dist/model-viewer.min.js"></script>
+  <style>
+    html, body { margin: 0; height: 100%; background: #111; }
+    model-viewer { width: 100%; height: 100%; }
+  </style>
+</head>
+<body>
+  <model-viewer
+    src="model.gltf"
+    type="model/gltf+json"
+    "uri": "model.bin",
+    auto-rotate
+    camera-controls
+    background-color="#111">
+  </model-viewer>
+</body>
+</html>
+''';
+
+    final htmlFile = File('${tempDir.path}/viewer.html');
+    await htmlFile.writeAsString(html);
+
+    // Запускаем HTTP-сервер
+    final handler = createStaticHandler(
+      tempDir.path,
+      defaultDocument: 'viewer.html',
+    );
+    _server = await io.serve(handler, 'localhost', 0);
+    final url = 'http://localhost:${_server!.port}/viewer.html';
+
+    setState(() => _url = url);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Model Viewer')),
+      body:
+          _url == null
+              ? const Center(child: CircularProgressIndicator())
+              : InAppWebView(
+                initialUrlRequest: URLRequest(
+                  url: WebUri.uri(Uri.parse(_url!)),
+                ),
+                initialOptions: InAppWebViewGroupOptions(
+                  crossPlatform: InAppWebViewOptions(
+                    javaScriptEnabled: true,
+                    mediaPlaybackRequiresUserGesture: false,
+                  ),
+                ),
+              ),
+    );
+  }
 }

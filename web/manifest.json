@@ -1,6 +1,6 @@
 {
-    "name": "stl_converter",
-    "short_name": "stl_converter",
+    "name": "stl_to_gltf_converter",
+    "short_name": "stl_to_gltf_converter",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
