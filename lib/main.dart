@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:stl_to_gltf_converter/converter/model_diff.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import 'converter/stl_parser.dart';
@@ -29,6 +30,7 @@ class _ConverterPageState extends State<ConverterPage>
     with SingleTickerProviderStateMixin {
   String? _status;
   String? _modelPath;
+
   String? _binPath;
 
   bool modelLoaded = false;
@@ -42,6 +44,30 @@ class _ConverterPageState extends State<ConverterPage>
   @override
   void dispose() {
     super.dispose();
+  }
+
+  Future<void> _diffMesh() async {
+    final oldTriangles = await StlParser.parse(File(_cubePath));
+    final newTriangles = await StlParser.parse(File(_newPath));
+
+    final diff = ModelDiffer.compareModels(oldTriangles, newTriangles);
+
+    final gltfAsset = GltfBuilder.buildDiffMesh(
+      unchanged: diff.unchanged,
+      added: diff.added,
+      asGlb: false,
+    );
+
+    final directory = await getApplicationDocumentsDirectory();
+    final outputPath = '${directory.path}';
+
+    await GltfWriter.writeGltf(gltfAsset, outputPath);
+
+    setState(() {
+      _status = '$outputPath';
+      _modelPath = '$outputPath\\model.gltf';
+      _binPath = '$outputPath\\model.bin';
+    });
   }
 
   Future<void> _pickAndConvertFile() async {
@@ -96,6 +122,11 @@ class _ConverterPageState extends State<ConverterPage>
           children: [
             ElevatedButton(
               onPressed: _pickAndConvertFile,
+              child: const Text('Выбрать STL-файл и конвертировать'),
+            ),
+
+            ElevatedButton(
+              onPressed: _diffMesh,
               child: const Text('Выбрать STL-файл и конвертировать'),
             ),
             Text('$_status'),
